@@ -1,94 +1,84 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-from datetime import datetime
-from sklearn.cluster import KMeans
 import plotly.express as px
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
 
-st.set_page_config(page_title="📊 RFM Customer Segmentation", layout="wide")
-st.title("📊 RFM Customer Segmentation Dashboard")
+st.set_page_config(page_title="RFM Customer Segmentation", layout="wide")
 
-# File uploader
-uploaded_file = st.file_uploader("Upload your sales data (CSV or Excel)", type=["csv", "xls", "xlsx"])
-if uploaded_file is not None:
+st.title("📊 RFM Customer Segmentation App")
+st.markdown("Upload your e-commerce transaction file (CSV or XLSX) to segment customers using **Recency, Frequency, and Monetary** analysis.")
+
+uploaded_file = st.file_uploader("📂 Upload your file", type=["csv", "xlsx"])
+
+def preprocess_data(df):
+    if "InvoiceDate" not in df.columns or "CustomerID" not in df.columns:
+        raise ValueError("Missing required columns: 'InvoiceDate' or 'CustomerID'.")
+    df["InvoiceDate"] = pd.to_datetime(df["InvoiceDate"])
+    df["TotalAmount"] = df["Quantity"] * df["UnitPrice"]
+    snapshot_date = df["InvoiceDate"].max() + pd.Timedelta(days=1)
+    rfm = df.groupby("CustomerID").agg({
+        "InvoiceDate": lambda x: (snapshot_date - x.max()).days,
+        "InvoiceNo": "nunique",
+        "TotalAmount": "sum"
+    })
+    rfm.columns = ["Recency", "Frequency", "Monetary"]
+    return rfm
+
+def perform_clustering(rfm, k):
+    scaler = StandardScaler()
+    rfm_scaled = scaler.fit_transform(rfm)
+    kmeans = KMeans(n_clusters=k, random_state=42, n_init="auto")
+    rfm["Cluster"] = kmeans.fit_predict(rfm_scaled)
+    return rfm
+
+def label_cluster(row, cluster_summary):
+    r, f, m = row["Recency"], row["Frequency"], row["Monetary"]
+    c = row["Cluster"]
+    avg_r = cluster_summary.loc[c, "Recency"]
+    avg_f = cluster_summary.loc[c, "Frequency"]
+    avg_m = cluster_summary.loc[c, "Monetary"]
+    if avg_r < 40 and avg_f > 10 and avg_m > 5000:
+        return "Loyal High-Spenders"
+    elif avg_r > 90 and avg_f < 3:
+        return "At-Risk / Inactive"
+    elif avg_f < 3 and avg_m < 1000:
+        return "Low-Value / One-Time"
+    else:
+        return "Potential / Average"
+
+if uploaded_file:
     try:
-        if uploaded_file.name.endswith(".csv"):
-            df = pd.read_csv(uploaded_file)
-        else:
-            df = pd.read_excel(uploaded_file, engine="openpyxl")
-    except Exception as e:
-        st.error(f"Error processing file: {e}")
-        st.stop()
+        file_extension = uploaded_file.name.split(".")[-1]
+        df = pd.read_csv(uploaded_file) if file_extension == "csv" else pd.read_excel(uploaded_file)
+        rfm = preprocess_data(df)
 
-    st.subheader("Step 1: Map Column Names")
-    st.write("Please select the corresponding columns from your file for the required fields.")
+        st.sidebar.subheader("🔢 Select Number of Segments")
+        num_clusters = st.sidebar.slider("Number of clusters", 2, 6, 4)
 
-    # Select boxes to map necessary columns
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        invoice_col = st.selectbox("Select Invoice Number column", df.columns)
-    with col2:
-        date_col = st.selectbox("Select Invoice Date column", df.columns)
-    with col3:
-        customer_col = st.selectbox("Select Customer ID column", df.columns)
+        rfm_clustered = perform_clustering(rfm.copy(), num_clusters)
+        cluster_counts = rfm_clustered["Cluster"].value_counts().sort_index()
 
-    col4, col5 = st.columns(2)
-    with col4:
-        quantity_col = st.selectbox("Select Quantity column", df.columns)
-    with col5:
-        price_col = st.selectbox("Select Unit Price column", df.columns)
-
-    try:
-        df[date_col] = pd.to_datetime(df[date_col])
-        df["TotalPrice"] = df[quantity_col] * df[price_col]
-
-        ref_date = df[date_col].max() + pd.Timedelta(days=1)
-
-        rfm = df.groupby(customer_col).agg({
-            date_col: lambda x: (ref_date - x.max()).days,
-            invoice_col: 'nunique',
-            "TotalPrice": 'sum'
-        }).reset_index()
-
-        rfm.columns = ['CustomerID', 'Recency', 'Frequency', 'Monetary']
-
-        st.subheader("Step 2: RFM Table")
-        st.dataframe(rfm.head(10), use_container_width=True)
-
-        st.subheader("Step 3: KMeans Clustering")
-        k = st.slider("Select number of clusters", min_value=2, max_value=8, value=4)
-        kmeans = KMeans(n_clusters=k, random_state=42)
-        rfm["Cluster"] = kmeans.fit_predict(rfm[["Recency", "Frequency", "Monetary"]])
-
-        summary = rfm.groupby("Cluster").agg({
-            "Recency": "mean",
-            "Frequency": "mean",
-            "Monetary": "mean",
-            "CustomerID": "count"
-        }).rename(columns={"CustomerID": "CustomerCount"}).reset_index()
-
-        st.subheader("📂 Segment Breakdown")
+        st.subheader("📊 Segment Breakdown")
         fig = px.bar(
-            summary.sort_values("CustomerCount", ascending=True),
-            x="CustomerCount",
-            y="Cluster",
+            cluster_counts,
             orientation='h',
-            color="Cluster",
-            title="Customers per Cluster",
-            color_continuous_scale="Viridis"
+            labels={'index': 'Cluster', 'value': 'Number of Customers'},
+            text_auto=True,
+            color=cluster_counts.index
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        st.subheader("⬇️ Download Results")
-        st.download_button(
-            label="Download RFM with Clusters (CSV)",
-            data=rfm.to_csv(index=False),
-            file_name="rfm_clusters.csv",
-            mime="text/csv"
-        )
+        cluster_summary = rfm_clustered.groupby("Cluster").mean().round(2)
+        rfm_clustered["Segment Label"] = rfm_clustered.apply(lambda row: label_cluster(row, cluster_summary), axis=1)
+        cluster_summary["Segment Label"] = rfm_clustered.groupby("Cluster")["Segment Label"].agg(lambda x: x.mode().iloc[0])
+
+        st.subheader("📌 Segment Summary with Labels")
+        st.dataframe(cluster_summary.reset_index(), use_container_width=True)
+
+        st.download_button("📥 Download Segmented RFM Data", rfm_clustered.reset_index().to_csv(index=False).encode(), file_name="rfm_segmented.csv", mime="text/csv")
 
     except Exception as e:
-        st.error(f"⚠️ Error processing data: {e}")
-
+        st.error(f"⚠️ Error processing file: {e}")
 else:
-    st.info("Please upload a CSV or Excel file with transaction data.")
+    st.info("📎 Please upload a CSV or XLSX file to begin.")
