@@ -1,85 +1,108 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
+import plotly.express as px
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
 
-st.set_page_config(page_title="RFM Segmentation", layout="wide")
+st.set_page_config(page_title="RFM Customer Segmentation", layout="wide")
 
-st.title("📊 RFM Customer Segmentation Tool")
-st.markdown("Upload your customer dataset and choose which columns to use for Recency, Frequency, and Monetary calculations.")
+st.title("📊 RFM Customer Segmentation App")
+st.markdown(
+    "Upload your e-commerce transaction file (CSV or XLSX) and select the columns for "
+    "**Recency, Frequency, and Monetary** to perform segmentation."
+)
 
-# Step 1: File upload
-uploaded_file = st.file_uploader("Upload CSV file", type=["csv"])
+uploaded_file = st.file_uploader("📂 Upload your file", type=["csv", "xlsx"])
+
+
+def convert_numeric(series):
+    """Convert string numbers with commas to float."""
+    return pd.to_numeric(series.astype(str).str.replace(",", "").str.strip(), errors="coerce")
+
+
+def perform_clustering(rfm, k):
+    scaler = StandardScaler()
+    rfm_scaled = scaler.fit_transform(rfm)
+    kmeans = KMeans(n_clusters=k, random_state=42, n_init="auto")
+    rfm["Cluster"] = kmeans.fit_predict(rfm_scaled)
+    return rfm
+
+
+def label_cluster(row, cluster_summary):
+    c = row["Cluster"]
+    avg_r = cluster_summary.loc[c, "Recency"]
+    avg_f = cluster_summary.loc[c, "Frequency"]
+    avg_m = cluster_summary.loc[c, "Monetary"]
+    if avg_r < 40 and avg_f > 10 and avg_m > 5000:
+        return "Loyal High-Spenders"
+    elif avg_r > 90 and avg_f < 3:
+        return "At-Risk / Inactive"
+    elif avg_f < 3 and avg_m < 1000:
+        return "Low-Value / One-Time"
+    else:
+        return "Potential / Average"
+
 
 if uploaded_file:
     try:
-        df = pd.read_csv(uploaded_file)
-    except Exception:
-        df = pd.read_excel(uploaded_file)
+        file_extension = uploaded_file.name.split(".")[-1]
+        df = pd.read_csv(uploaded_file) if file_extension == "csv" else pd.read_excel(uploaded_file)
 
-    st.subheader("Preview of Uploaded Data")
-    st.dataframe(df.head(), use_container_width=True)
+        # Column selection UI
+        st.sidebar.subheader("🛠 Select Columns for RFM")
+        col_recency = st.sidebar.selectbox("Recency Column", df.columns)
+        col_frequency = st.sidebar.selectbox("Frequency Column", df.columns)
+        col_monetary = st.sidebar.selectbox("Monetary Column", df.columns)
 
-    # Step 2: Column selection UI
-    st.subheader("🔍 Select Columns for RFM Analysis")
-    col1, col2, col3 = st.columns(3)
+        # Convert to numeric if needed
+        df[col_recency] = convert_numeric(df[col_recency])
+        df[col_frequency] = convert_numeric(df[col_frequency])
+        df[col_monetary] = convert_numeric(df[col_monetary])
 
-    with col1:
-        date_column = st.selectbox("📅 Date Column (for Recency)", df.columns)
+        # Build RFM dataframe
+        rfm = df[[col_recency, col_frequency, col_monetary]].copy()
+        rfm.columns = ["Recency", "Frequency", "Monetary"]
 
-    with col2:
-        freq_column = st.selectbox("🔄 Frequency Column", df.columns)
+        # Select clusters
+        st.sidebar.subheader("🔢 Select Number of Segments")
+        num_clusters = st.sidebar.slider("Number of clusters", 2, 6, 4)
 
-    with col3:
-        monetary_column = st.selectbox("💰 Monetary Column", df.columns)
+        # Clustering
+        rfm_clustered = perform_clustering(rfm.copy(), num_clusters)
+        cluster_counts = rfm_clustered["Cluster"].value_counts().sort_index()
 
-    # Step 3: Convert data types safely
-    df[date_column] = pd.to_datetime(df[date_column], errors="coerce")
-    
-    # Clean and convert Frequency column
-    df[freq_column] = (
-        df[freq_column]
-        .astype(str)
-        .str.replace(",", "", regex=False)
-        .astype(float)
-    )
+        # Segment breakdown
+        st.subheader("📊 Segment Breakdown")
+        fig = px.bar(
+            cluster_counts,
+            orientation='h',
+            labels={'index': 'Cluster', 'value': 'Number of Customers'},
+            text_auto=True,
+            color=cluster_counts.index
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
-    # Clean and convert Monetary column
-    df[monetary_column] = (
-        df[monetary_column]
-        .astype(str)
-        .str.replace(",", "", regex=False)
-        .astype(float)
-    )
+        # Cluster summary & labeling
+        cluster_summary = rfm_clustered.groupby("Cluster").mean().round(2)
+        rfm_clustered["Segment Label"] = rfm_clustered.apply(lambda row: label_cluster(row, cluster_summary), axis=1)
+        cluster_summary["Segment Label"] = (
+            rfm_clustered.groupby("Cluster")["Segment Label"].agg(lambda x: x.mode().iloc[0])
+        )
 
-    # Step 4: RFM calculation
-    st.subheader("⚙️ RFM Calculation in Progress...")
-    snapshot_date = df[date_column].max() + pd.Timedelta(days=1)
+        # Summary table
+        st.subheader("📌 Segment Summary with Labels")
+        st.dataframe(cluster_summary.reset_index(), use_container_width=True)
 
-    rfm = df.groupby(df.index).agg({
-        date_column: lambda x: (snapshot_date - x.max()).days,
-        freq_column: 'sum',
-        monetary_column: 'sum'
-    })
+        # Download button
+        st.download_button(
+            "📥 Download Segmented RFM Data",
+            rfm_clustered.reset_index().to_csv(index=False).encode(),
+            file_name="rfm_segmented.csv",
+            mime="text/csv"
+        )
 
-    rfm.columns = ['Recency', 'Frequency', 'Monetary']
+    except Exception as e:
+        st.error(f"⚠️ Error processing file: {e}")
 
-    # Step 5: RFM Scoring
-    rfm['R_Score'] = pd.qcut(rfm['Recency'], 4, labels=[4,3,2,1])
-    rfm['F_Score'] = pd.qcut(rfm['Frequency'].rank(method='first'), 4, labels=[1,2,3,4])
-    rfm['M_Score'] = pd.qcut(rfm['Monetary'], 4, labels=[1,2,3,4])
-
-    rfm['RFM_Segment'] = rfm['R_Score'].astype(str) + rfm['F_Score'].astype(str) + rfm['M_Score'].astype(str)
-    rfm['RFM_Score'] = rfm[['R_Score','F_Score','M_Score']].sum(axis=1)
-
-    # Step 6: Display results
-    st.success("✅ RFM Calculation Complete!")
-    st.dataframe(rfm.head(), use_container_width=True)
-
-    # Step 7: Download results
-    csv = rfm.to_csv(index=True)
-    st.download_button(
-        "📥 Download RFM Results as CSV",
-        data=csv,
-        file_name="rfm_segmentation.csv",
-        mime="text/csv"
-    )
+else:
+    st.info("📎 Please upload a CSV or XLSX file to begin.")
