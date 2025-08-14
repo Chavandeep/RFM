@@ -1,69 +1,69 @@
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-from sklearn.cluster import KMeans
 import streamlit as st
-from io import StringIO
+import pandas as pd
+from sklearn.cluster import KMeans
+import plotly.express as px
 
-# Streamlit app title
-st.title("📊 KMeans Clustering Tool")
+st.set_page_config(page_title="RFM Analysis", layout="wide")
+
+st.title("📊 RFM Analysis Tool")
 
 # File uploader
-uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
+uploaded_file = st.file_uploader("Upload your Excel or CSV file", type=["xlsx", "csv"])
 
 if uploaded_file:
     # Read file
-    try:
+    if uploaded_file.name.endswith(".xlsx"):
+        df = pd.read_excel(uploaded_file, engine="openpyxl")
+    else:
         df = pd.read_csv(uploaded_file)
-    except Exception as e:
-        st.error(f"Error reading CSV: {e}")
-        st.stop()
 
-    st.subheader("Preview of Uploaded Data")
+    st.subheader("Preview of Data")
     st.dataframe(df.head())
 
-    # Column selection
-    st.subheader("Select Columns for Clustering")
-    selected_columns = st.multiselect(
-        "Pick numeric columns to use for clustering:",
-        options=df.columns,
-        default=df.select_dtypes(include=[np.number]).columns.tolist()
-    )
+    # Let user select columns
+    st.subheader("Select Columns for RFM")
+    col1, col2, col3 = st.columns(3)
 
-    if selected_columns:
-        # Keep only selected columns and drop NaNs
-        data_selected = df[selected_columns].dropna()
+    with col1:
+        col_customer = st.selectbox("Customer ID Column", df.columns)
+    with col2:
+        col_date = st.selectbox("Transaction Date Column", df.columns)
+    with col3:
+        col_amount = st.selectbox("Amount Column", df.columns)
 
-        if data_selected.empty:
-            st.warning("No rows left after removing NaN values.")
-        else:
-            # Choose number of clusters
-            k = st.slider("Number of clusters (k)", 2, 10, 3)
+    # Button to trigger processing
+    if st.button("Run RFM Analysis"):
+        try:
+            df[col_date] = pd.to_datetime(df[col_date], errors='coerce')
+            df = df.dropna(subset=[col_date, col_amount])
 
-            # Run KMeans
-            kmeans = KMeans(n_clusters=k, random_state=42)
-            labels = kmeans.fit_predict(data_selected)
+            # Reference date
+            ref_date = df[col_date].max() + pd.Timedelta(days=1)
 
-            # Add cluster labels to data
-            data_selected["Cluster"] = labels
-            st.subheader("Clustered Data")
-            st.dataframe(data_selected)
+            # RFM Calculation
+            rfm = df.groupby(col_customer).agg({
+                col_date: lambda x: (ref_date - x.max()).days,
+                col_customer: 'count',
+                col_amount: 'sum'
+            }).reset_index()
 
-            # Scatter plot (only if at least 2 columns are selected)
-            if len(selected_columns) >= 2:
-                fig, ax = plt.subplots()
-                scatter = ax.scatter(
-                    data_selected[selected_columns[0]],
-                    data_selected[selected_columns[1]],
-                    c=labels,
-                    cmap="viridis"
-                )
-                ax.set_xlabel(selected_columns[0])
-                ax.set_ylabel(selected_columns[1])
-                ax.set_title("KMeans Clustering")
-                plt.colorbar(scatter)
-                st.pyplot(fig)
-            else:
-                st.info("Select at least 2 columns to see a scatter plot.")
-    else:
-        st.info("Please select at least one column to start clustering.")
+            rfm.columns = ['CustomerID', 'Recency', 'Frequency', 'Monetary']
+
+            # K-Means Clustering
+            kmeans = KMeans(n_clusters=3, random_state=42)
+            rfm[['R_Score', 'F_Score', 'M_Score']] = rfm[['Recency', 'Frequency', 'Monetary']]
+            rfm['Cluster'] = kmeans.fit_predict(rfm[['Recency', 'Frequency', 'Monetary']])
+
+            st.subheader("RFM Table with Clusters")
+            st.dataframe(rfm)
+
+            # Plotly 3D Scatter
+            fig = px.scatter_3d(
+                rfm, x='Recency', y='Frequency', z='Monetary',
+                color='Cluster', hover_data=['CustomerID'],
+                title="RFM Clusters (3D)"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        except Exception as e:
+            st.error(f"Error during processing: {e}")
