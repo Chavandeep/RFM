@@ -46,7 +46,7 @@ if uploaded_file:
            col_amount: ['count', 'sum']                     # Frequency & Monetary
            }).reset_index()
 
-rfm.columns = ['CustomerID', 'Recency', 'Frequency', 'Monetary']
+           rfm.columns = ['CustomerID', 'Recency', 'Frequency', 'Monetary']
 
             # K-Means Clustering
             kmeans = KMeans(n_clusters=3, random_state=42)
