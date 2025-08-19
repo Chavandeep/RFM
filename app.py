@@ -41,13 +41,12 @@ if uploaded_file:
             ref_date = df[col_date].max() + pd.Timedelta(days=1)
 
             # RFM Calculation
-            rfm = df.groupby(col_customer).agg({
-                col_date: lambda x: (ref_date - x.max()).days,
-                col_customer: 'count',
-                col_amount: 'sum'
-            }).reset_index()
+           rfm = df.groupby(col_customer).agg({
+           col_date: lambda x: (ref_date - x.max()).days,   # Recency
+           col_amount: ['count', 'sum']                     # Frequency & Monetary
+           }).reset_index()
 
-            rfm.columns = ['CustomerID', 'Recency', 'Frequency', 'Monetary']
+rfm.columns = ['CustomerID', 'Recency', 'Frequency', 'Monetary']
 
             # K-Means Clustering
             kmeans = KMeans(n_clusters=3, random_state=42)
